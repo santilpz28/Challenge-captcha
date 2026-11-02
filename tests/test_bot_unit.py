@@ -39,10 +39,18 @@ class TestHumanTrace:
         assert t[-1]["y"] == pytest.approx(24.0, abs=0.05)
 
     def test_timestamps_are_monotonic(self):
-        t = human_trace(0, 0, 300, 0)
-        ts = [p["t"] for p in t]
-        assert all(b >= a for a, b in zip(ts, ts[1:]))
-        assert ts[-1] > 0
+        """Across many seeds: a trace that goes backwards in time is a bug.
+
+        The correction hesitation used to pull the last timestamp
+        backwards, which made ~40% of traces invalid timelines. A kinematic
+        scorer rejects those before a human would even notice.
+        """
+        import random
+        for seed in range(50):
+            t = human_trace(0, 0, 200, 0, rng=random.Random(seed))
+            ts = [p["t"] for p in t]
+            assert all(b >= a for a, b in zip(ts, ts[1:])), \
+                f"seed {seed}: non-monotonic timestamps"
 
     def test_is_not_a_straight_line(self):
         """A perfectly straight path is the single most bot-like signature."""

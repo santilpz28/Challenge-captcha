@@ -109,8 +109,18 @@ def human_trace(x0: float, y0: float, x1: float, y1: float,
     pts[-1]["y"] = round(y1, 2)
 
     # A human occasionally pauses before releasing (correction hesitation).
+    # The pause ADDS time to the last sample — it must never pull the
+    # timestamp backwards, or the trace stops being a valid timeline and
+    # any server-side kinematics check rejects it outright.
     if rng.random() < 0.25 and len(pts) > 3:
-        pts[-2]["t"] = round(pts[-2]["t"] + rng.uniform(0.02, 0.09), 4)
+        pts[-1]["t"] = round(pts[-1]["t"] + rng.uniform(0.02, 0.09), 4)
+
+    # Safety net: timestamps must be non-decreasing. A trace that goes
+    # backwards in time is not a human hesitation, it is a bug — and a
+    # kinematic scorer will notice before a human would.
+    for i in range(1, len(pts)):
+        if pts[i]["t"] < pts[i - 1]["t"]:
+            pts[i]["t"] = pts[i - 1]["t"]
 
     return pts
 
