@@ -30,13 +30,18 @@ from bot.solvers import get_solver
 class TestHumanTrace:
 
     def test_starts_and_ends_exactly_on_target(self):
-        t = human_trace(10.0, 20.0, 210.0, 24.0)
-        # The start point carries the tremor (a real hand is never perfectly
-        # still), but it must be within a pixel or two of the origin.
-        assert t[0]["x"] == pytest.approx(10.0, abs=2.0)
-        # The END is exact: humans always finish on the pixel they aimed at.
-        assert t[-1]["x"] == pytest.approx(210.0, abs=0.05)
-        assert t[-1]["y"] == pytest.approx(24.0, abs=0.05)
+        import random
+        for seed in range(20):
+            t = human_trace(10.0, 20.0, 210.0, 24.0, rng=random.Random(seed))
+            # The start point carries the tremor (a real hand is never
+            # perfectly still), but it must stay in the neighbourhood of
+            # the origin — a few pixels, not a few dozen.
+            assert abs(t[0]["x"] - 10.0) <= 6, f"seed {seed}: start x drifted"
+            assert abs(t[0]["y"] - 20.0) <= 6, f"seed {seed}: start y drifted"
+            # The END is exact: humans always finish on the pixel they
+            # aimed at, and a bot that misses by 3px fails the challenge.
+            assert t[-1]["x"] == pytest.approx(210.0, abs=0.05)
+            assert t[-1]["y"] == pytest.approx(24.0, abs=0.05)
 
     def test_timestamps_are_monotonic(self):
         """Across many seeds: a trace that goes backwards in time is a bug.
