@@ -126,8 +126,8 @@ class TestSolverRegistry:
 class TestSolverAccuracy:
 
     def test_text_solver_reads_a_generated_challenge(self):
-        from app.families.base import to_data_url
-        from app.families.text_family import TextFamily
+        from challenges.base import to_data_url
+        from challenges.text_family import TextFamily
 
         fam = TextFamily()
         ok = 0
@@ -140,7 +140,7 @@ class TestSolverAccuracy:
         assert ok >= 2, f"OCR solved only {ok}/3"
 
     def test_grid_solver_picks_the_right_cells(self):
-        from app.families.grid_family import GridFamily
+        from challenges.grid_family import GridFamily
 
         fam = GridFamily(grid=3, target_count=(2, 4), tile_size=96, distortion=0.25)
         ch = fam.generate(seed=101)
@@ -151,7 +151,7 @@ class TestSolverAccuracy:
 
     def test_slider_solver_finds_the_gap_exactly(self):
         """The headline number: 0 px error, every time."""
-        from app.render import render_challenge
+        from challenges.render import render_challenge
 
         for seed in (7, 8, 9):
             bg, piece, geom, meta, template = render_challenge(seed=seed)
@@ -173,7 +173,7 @@ class TestGapDetection:
 
     def test_finds_the_gap_in_a_generated_board(self):
         """The contrast detector must find the hole without the sprite."""
-        from app.render import render_challenge
+        from challenges.render import render_challenge
 
         hits = 0
         for seed in (11, 12, 13, 14):
@@ -188,7 +188,7 @@ class TestGapDetection:
         assert hits >= 3, f"contrast detector found only {hits}/4 gaps"
 
     def test_reports_a_confidence_and_candidates(self):
-        from app.render import render_challenge
+        from challenges.render import render_challenge
         bg, *_ = render_challenge(seed=11)
         gap = detect_gap(bg)
         assert 0.0 <= gap["confidence"] <= 1.0
@@ -199,6 +199,109 @@ class TestGapDetection:
         blank = Image.new("RGB", (200, 120), (240, 240, 240))
         gap = detect_gap(blank)
         assert gap["x"] is None or gap["confidence"] >= 0.0
+
+
+class TestMultiSelect:
+    """The "select all the dogs" family — one target, many matches."""
+
+    def test_grid_returns_every_matching_cell(self):
+        """A grid challenge with four buses must return four cells."""
+        from challenges.grid_family import GridFamily
+
+        fam = GridFamily(grid=3, target_count=(3, 4), tile_size=96,
+                         distortion=0.2)
+        ch = fam.generate(seed=42)
+        raw = _data_url_bytes(ch.public["image"])
+        res = get_solver("grid", grid=3, tile_size=96,
+                         gap=ch.public["gap"],
+                         target=ch.public["target"]).solve_image(raw)
+        assert res.answer == sorted(ch.truth["cells"]), \
+            f"picked {res.answer}, truth {ch.truth['cells']}"
+
+    def test_multi_select_returns_a_list_not_one_box(self):
+        """The image family's multi mode must return several hits."""
+        from challenges.image_family import ImageFamily
+
+        fam = ImageFamily(size=220, n_objects=6)
+        ch = fam.generate(seed=42)
+        raw = _data_url_bytes(ch.public["image"])
+        res = get_solver("image", target=ch.public["target"],
+                         multi=True).solve_image(raw)
+        assert isinstance(res.answer, dict)
+        assert "hits" in res.answer
+        assert "clicks" in res.answer
+        assert len(res.answer["clicks"]) == len(res.answer["hits"])
+
+    def test_single_click_returns_one_target(self):
+        from challenges.image_family import ImageFamily
+
+        fam = ImageFamily(size=220, n_objects=6)
+        ch = fam.generate(seed=42)
+        raw = _data_url_bytes(ch.public["image"])
+        res = get_solver("image", target=ch.public["target"],
+                         multi=False).solve_image(raw)
+        assert isinstance(res.answer, dict)
+        assert len(res.answer.get("hits", [])) <= 1
+
+    def test_target_is_free_text_not_a_fixed_label(self):
+        """The semantic solver must accept ANY word, not a label set."""
+        from bot.image_solver import SemanticImageSolver
+        s = SemanticImageSolver(target="traffic light")
+        assert s.target == "traffic light"
+        assert "traffic light" in s.labels
+
+    def test_clip_is_opt_in(self):
+        """CLIP must not be the default: it misreads synthetic clip-art."""
+        from bot.image_solver import SemanticImageSolver
+        assert SemanticImageSolver(target="dog").use_clip is False
+        assert SemanticImageSolver(target="dog", use_clip=True).use_clip is True
+
+
+class TestTextSolver:
+    def test_duplicate_characters_are_dropped(self):
+        from bot.text_solver import _drop_ocr_duplicates
+        # OCR invents a repeated glyph on noisy images: "CFHF35" reads
+        # back as "CFHF335". The duplicate run collapses.
+        assert _drop_ocr_duplicates("CFHF335") == "CFHF35"
+        assert _drop_ocr_duplicates("AABB") == "AB"
+        # A deliberate run of three is kept — "111" is a real answer.
+        assert _drop_ocr_duplicates("111") == "111"
+        assert _drop_ocr_duplicates("") == ""
+
+
+class TestAutonomy:
+    """The attacker must not depend on the generator's internals."""
+
+    def test_bot_imports_without_the_generator_package(self):
+        """The bot has to work on a challenge it has never seen."""
+        import importlib
+        import shutil
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        gen = root / "challenges"
+        hidden = root / "_challenges_tmp"
+        if not gen.exists():
+            pytest.skip("challenges/ not present")
+        shutil.move(str(gen), str(hidden))
+        try:
+            code = (
+                "import sys; sys.path.insert(0, %r);\n"
+                "import bot.solvers, bot.behavior, bot.client, bot.gapdetect;\n"
+                "import bot.text_solver, bot.grid_solver, bot.image_solver;\n"
+                "from bot.solvers import get_solver;\n"
+                "assert get_solver('slider').name == 'slider';\n"
+                "assert get_solver('image', target='dog', multi=True).multi;\n"
+                "print('OK')" % str(root)
+            )
+            r = subprocess.run([sys.executable, "-c", code],
+                               capture_output=True, text=True, timeout=180,
+                               cwd=str(root))
+            assert "OK" in r.stdout, r.stderr[-500:]
+        finally:
+            shutil.move(str(hidden), str(gen))
 
 
 # --------------------------------------------------------------------------

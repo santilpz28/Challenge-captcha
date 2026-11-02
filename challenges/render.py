@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, asdict
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-from .tokens import CANVAS_W, CANVAS_H, PIECE_SIZE, PIECE_MARGIN_X
+from .geometry_tokens import CANVAS_W, CANVAS_H, PIECE_SIZE, PIECE_MARGIN_X
 
 
 @dataclass

@@ -31,61 +31,18 @@ from PIL import Image
 # payload helpers
 # --------------------------------------------------------------------------
 
-def to_data_url(img: Image.Image, fmt: str = "PNG") -> str:
-    """Serialise a PIL image as a data URL (keeps the widget to one request)."""
-    buf = io.BytesIO()
-    img.save(buf, format=fmt, optimize=True)
-    return "data:image/{};base64,{}".format(
-        fmt.lower(), base64.b64encode(buf.getvalue()).decode())
-
-
-def decode_data_url(url: str) -> Image.Image:
-    """Inverse of `to_data_url`."""
-    raw = base64.b64decode(url.split(",", 1)[1])
-    return Image.open(io.BytesIO(raw)).convert("RGB")
+# The data-URL helpers live in `core/` alongside the contract — both the
+# attacker and the generators need to read and write image payloads.
+from core.images import decode_data_url, to_data_url  # noqa: E402,F401
 
 
 # --------------------------------------------------------------------------
 # contracts
 # --------------------------------------------------------------------------
 
-@dataclass
-class Attempt:
-    """What an attacker submits for a challenge."""
-    answer: Any
-    # Behavioural signals the client would report. The solver fills these in
-    # so the behavioural gate has something to score.
-    trace: list[dict] = field(default_factory=list)
-    duration_ms: float = 0.0
-    pointer_events: int = 0
-    # Free-form diagnostics (per-cell confidences, OCR text, …)
-    meta: dict = field(default_factory=dict)
-
-
-@dataclass
-class Challenge:
-    """A generated challenge.
-
-    `truth` never leaves the server. `public` is the client-safe payload.
-    """
-    family: str
-    cid: str
-    seed: int
-    created: float
-    # Client-facing payload.
-    public: dict
-    # Server-side answer key.
-    truth: Any
-    # Reference images kept for scoring (e.g. the pristine tiles).
-    artifacts: dict = field(default_factory=dict)
-
-    @staticmethod
-    def new_id() -> str:
-        return secrets.token_urlsafe(12)
-
-    @property
-    def age_s(self) -> float:
-        return time.time() - self.created
+# The Challenge/Attempt contract lives in `core/` — the one module both
+# the attacker and the generators share. See core/contract.py.
+from core.contract import Attempt, Challenge  # noqa: E402,F401
 
 
 class Family(Protocol):

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "challenge-captcha-bot"
 version = "1.0.0"
-description = "Automated CAPTCHA solving bot with a reproducible test bench (authorized security auditing only)"
+description = "Automated CAPTCHA solving bot: slider, OCR text, multi-select grid and semantic image attacks (authorized security auditing only)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -21,8 +21,6 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
     "pillow>=10.0",
     "numpy>=1.26",
 ]
@@ -45,7 +43,7 @@ Source = "https://github.com/santilpz28/Challenge-captcha"
 captcha-bot = "bot.cli:main"
 
 [tool.setuptools]
-packages = ["bot", "app", "app.families"]
+packages = ["bot", "core"]
 include-package-data = true
 
 [tool.pytest.ini_options]

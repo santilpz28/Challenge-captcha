@@ -20,7 +20,6 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-from .render import PieceGeometry
 
 
 def _masked_ncc(image: np.ndarray, templ: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -80,11 +79,16 @@ def _xcorr(image: np.ndarray, templ: np.ndarray) -> np.ndarray:
 
 
 def solve_slider(bg: Image.Image, piece: Image.Image,
-                 geom: PieceGeometry | None = None,
+                 geom=None,
                  channel: str = "gray",
                  use_hole_detector: bool = False,
                  erode_mask: int = 2) -> dict:
-    """Locate the gap in `bg` by matching the `piece` sprite against it."""
+    """Locate the gap in `bg` by matching the `piece` sprite against it.
+
+    ``geom`` is accepted for backwards compatibility and ignored: the
+    attacker must not depend on the generator's internals. The only
+    inputs it trusts are the two images the site hands out.
+    """
     bg = bg.convert("RGB")
     bg_arr = np.asarray(bg, dtype=np.float64)
 

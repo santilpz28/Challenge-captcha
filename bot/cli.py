@@ -66,13 +66,15 @@ def cmd_image(args) -> int:
     from bot.solvers import get_solver
 
     data = _read_image(args.input)
-    solver = get_solver(args.family, **({"grid": args.grid,
-                                        "tile_size": args.tile_size,
-                                        "gap": args.gap,
-                                        "target": args.target}
-                                       if args.family == "grid" else
-                                       {"target": args.target}
-                                       if args.family == "image" else {}))
+    kwargs = {}
+    if args.family == "grid":
+        kwargs = {"grid": args.grid, "tile_size": args.tile_size,
+                  "gap": args.gap, "target": args.target}
+    elif args.family == "image":
+        kwargs = {"target": args.target, "multi": args.multi,
+                  "threshold": args.threshold,
+                  "use_clip": bool(getattr(args, "clip", False))}
+    solver = get_solver(args.family, **kwargs)
 
     if args.family == "slider":
         if not args.piece:
@@ -105,7 +107,10 @@ def cmd_api(args) -> int:
         return 2
 
     solver = get_solver(args.family, grid=args.grid, tile_size=args.tile_size,
-                        gap=args.gap, target=args.target)
+                        gap=args.gap, target=args.target,
+                        multi=bool(getattr(args, "multi", False)),
+                        threshold=float(getattr(args, "threshold", 0.22)),
+                        use_clip=bool(getattr(args, "clip", False)))
     if args.family == "slider":
         if not challenge.piece:
             _out({"error": "slider challenge carried no piece sprite"},
@@ -116,6 +121,15 @@ def cmd_api(args) -> int:
                                 sprite=challenge.raw.get("sprite"))
     else:
         res = solver.solve_image(challenge.image, target=args.target)
+        if args.family == "image" and getattr(args, "multi", False):
+            # Multi-select: click EVERY matching object, each with its
+            # own human-like movement.
+            from bot.behavior import human_click_trace
+            clicks = res.answer.get("clicks", []) if isinstance(res.answer, dict) else []
+            trace = []
+            for cx, cy in clicks:
+                trace.extend(human_click_trace(12, 120, float(cx), float(cy)))
+            args._clicks = clicks
 
     report = {"solved_answer": res.to_dict(),
               "challenge_id": challenge.challenge_id,
@@ -134,6 +148,14 @@ def cmd_api(args) -> int:
             trace = human_trace(x0, y0,
                                 float(res.answer.get("x", 0)),
                                 float(res.answer.get("y", 0)))
+        elif args.family == "image" and getattr(args, "multi", False):
+            # Multi-select: one human-like approach per matched object.
+            from bot.behavior import human_click_trace
+            clicks = (res.answer.get("clicks", [])
+                      if isinstance(res.answer, dict) else [])
+            for cx, cy in clicks:
+                trace.extend(human_click_trace(12, 120,
+                                               float(cx), float(cy)))
         elif args.family in ("grid", "image"):
             from bot.behavior import human_trace
             trace = human_trace(12, 120, 180, 120)
@@ -141,6 +163,10 @@ def cmd_api(args) -> int:
         extra = {"trace": trace, "pointer_events": len(trace),
                  "duration_ms": (round(trace[-1]["t"] * 1000, 1)
                                  if trace else 0)}
+        if args.family == "image" and getattr(args, "multi", False):
+            # Multi-select sites expect the list of chosen points.
+            extra["clicks"] = (res.answer.get("clicks", [])
+                               if isinstance(res.answer, dict) else [])
         ex = client.submit(args.submit_path, res.answer,
                            challenge_id=challenge.challenge_id,
                            extra=extra, submit=True)
@@ -187,14 +213,6 @@ def cmd_bench(args) -> int:
         sys.argv += ["--clip"]
     import bench
     bench.main()
-    return 0
-
-
-def cmd_serve(args) -> int:
-    """Run the lab server (generator + attacker UI)."""
-    import uvicorn
-    uvicorn.run("app.server:app", host=args.host, port=args.port,
-                reload=False)
     return 0
 
 
@@ -246,6 +264,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--piece-field", default="piece",
                     help="JSON key holding the piece sprite (slider only)")
     ap.add_argument("--target", help="target class to look for (grid/image)")
+    ap.add_argument("--multi", action="store_true",
+                    help="select EVERY matching object (image family)")
+    ap.add_argument("--threshold", type=float, default=0.22,
+                    help="minimum confidence for a match")
+    ap.add_argument("--clip", action="store_true",
+                    help="use the CLIP semantic attacker (needs the ONNX model)")
     ap.add_argument("--grid", type=int, default=3)
     ap.add_argument("--tile-size", type=int, default=96)
     ap.add_argument("--gap", type=int, default=8)
@@ -288,12 +312,6 @@ def build_parser() -> argparse.ArgumentParser:
     be.add_argument("--clip", action="store_true",
                     help="include the CLIP attacker (slow on CPU)")
     be.set_defaults(func=cmd_bench)
-
-    # ---- serve ----
-    sv = sub.add_parser("serve", help="run the lab server (UI)")
-    sv.add_argument("--host", default="127.0.0.1")
-    sv.add_argument("--port", type=int, default=8099)
-    sv.set_defaults(func=cmd_serve)
 
     return p
 

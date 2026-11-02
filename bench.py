@@ -27,10 +27,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from app.families.grid_family import GridFamily
-from app.families.harness import FamilyResult, format_report, run_family
-from app.families.image_family import ImageFamily
-from app.families.text_family import TextFamily
+from challenges.grid_family import GridFamily
+from challenges.harness import FamilyResult, format_report, run_family
+from challenges.image_family import ImageFamily
+from challenges.text_family import TextFamily
 
 DEFAULT_SEED = 20261101
 
@@ -51,7 +51,7 @@ def build_families(include_clip: bool = False) -> dict:
         "image": ImageFamily(size=220, n_objects=4, distortion=0.25),
     }
     if include_clip:
-        from app.families import clip_classifier
+        from challenges import clip_classifier
         if not clip_classifier.available():
             print("! CLIP model not on disk — run bench.py --download-clip",
                   file=sys.stderr)
@@ -140,7 +140,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.download_clip:
-        from app.families import clip_classifier
+        from challenges import clip_classifier
         print("downloading CLIP ONNX model (~300 MB)…")
         ok = clip_classifier.download(progress=True)
         print("ok" if ok else "download failed")

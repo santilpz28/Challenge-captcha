@@ -26,19 +26,11 @@ jobs:
           pip install pytest
 
       - name: Sanity — package imports
-        run: python -c "import bot; import app.server; print('imports ok', bot.__version__)"
+        run: python -c "import bot; import core; print('imports ok', bot.__version__)"
 
-      - name: Unit tests (behaviour engine + solvers)
+      - name: Unit tests (trace engine + solvers + multi-select + autonomy)
         run: |
           pytest tests/test_bot_unit.py -v
-
-      - name: Integration test (bot attacks the lab server)
-        run: |
-          python tests/test_integration.py
-
-      - name: E2E suite (lab server)
-        run: |
-          python tests/test_e2e.py
 
       - name: Bench smoke (3 runs per family)
         run: |

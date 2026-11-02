@@ -20,7 +20,7 @@ from typing import Any
 
 from PIL import Image
 
-from app.families.base import Attempt, Challenge
+from core.contract import Attempt, Challenge
 
 
 @dataclass
@@ -125,7 +125,7 @@ class SliderSolver(BaseSolver):
         falls back to the template match, and uses the contrast detector
         when the template's confidence is low.
         """
-        from app.solver import solve_slider
+        from bot.slider_solver import solve_slider
         from bot.gapdetect import detect_gap
 
         bg = (Image.open(io.BytesIO(background)).convert("RGB")
@@ -261,20 +261,20 @@ class TextSolver(BaseSolver):
     name = "text"
 
     def _build_challenge(self, img: Image.Image, **public) -> Challenge:
-        from app.families.text_family import ALPHABET, TextFamily
+        from bot.text_solver import DEFAULT_ALPHABET
         return Challenge(
             family="text",
             cid=Challenge.new_id(),
             seed=0,
             created=time.time(),
             public={"family": "text", "image": _data_url(img),
-                    "charset": ALPHABET},
+                    "charset": public.get("charset", DEFAULT_ALPHABET)},
             truth={},
         )
 
     def _solve(self, challenge: Challenge) -> Attempt:
-        from app.families.text_family import TextFamily
-        return TextFamily().solve(challenge)
+        from bot.text_solver import solve_text
+        return solve_text(challenge)
 
     def _attempt_to_result(self, attempt: Attempt) -> SolverResult:
         answer = attempt.answer or ""
@@ -313,7 +313,6 @@ class GridSolver(BaseSolver):
         self.target = target
 
     def _build_challenge(self, img: Image.Image, **public) -> Challenge:
-        from app.families.grid_family import GridFamily
         target = public.get("target") or self.target
         if target is None:
             target = self._infer_target(img)
@@ -337,20 +336,16 @@ class GridSolver(BaseSolver):
         times, not once). We classify every cell and pick the majority
         class.
         """
-        from app.families.grid_family import GridFamily
+        from bot.grid_solver import cell_boxes, _classify_classical
         counts: dict[str, int] = {}
-        for i in range(self.grid * self.grid):
-            r, c = divmod(i, self.grid)
-            x0 = c * (self.tile_size + self.gap)
-            y0 = r * (self.tile_size + self.gap)
-            tile = img.crop((x0, y0, x0 + self.tile_size, y0 + self.tile_size))
-            label, _ = GridFamily._classify(tile)
+        for box in cell_boxes(self.grid, self.tile_size, self.gap):
+            label, _ = _classify_classical(img.crop(box))
             counts[label] = counts.get(label, 0) + 1
         return max(counts, key=counts.get) if counts else "bus"
 
     def _solve(self, challenge: Challenge) -> Attempt:
-        from app.families.grid_family import GridFamily
-        return GridFamily().solve(challenge)
+        from bot.grid_solver import solve_grid
+        return solve_grid(challenge)
 
     def _attempt_to_result(self, attempt: Attempt) -> SolverResult:
         meta = attempt.meta or {}
@@ -376,15 +371,31 @@ class GridSolver(BaseSolver):
 # --------------------------------------------------------------------------
 
 class ImageSolver(BaseSolver):
-    """Single-image CAPTCHA: click the object matching the target."""
+    """Single-image CAPTCHA: click the object matching the target.
+
+    Two attack modes:
+
+    * **single** — one target object ("click the dog")
+    * **multi** — every matching object ("select all the dogs")
+
+    The semantic solver (`bot/image_solver.py`) handles both: it
+    segments the scene into candidate objects and classifies each one
+    with CLIP, so the target can be ANY word ("dog", "cat", "traffic
+    light"), not a fixed label set. When the CLIP model is absent it
+    degrades to the classical shape features.
+    """
 
     name = "image"
 
-    def __init__(self, target: str | None = None):
+    def __init__(self, target: str | None = None, multi: bool = False,
+                 threshold: float = 0.22, use_clip: bool = False):
         self.target = target
+        self.multi = multi
+        self.threshold = threshold
+        self.use_clip = use_clip
 
     def _build_challenge(self, img: Image.Image, **public) -> Challenge:
-        from app.families.image_family import ImageFamily
+        from challenges.image_family import ImageFamily
         target = public.get("target") or self._infer_target(img)
         return Challenge(
             family="image",
@@ -397,8 +408,8 @@ class ImageSolver(BaseSolver):
         )
 
     def _infer_target(self, img: Image.Image) -> str:
-        from app.families.grid_family import GridFamily
-        from app.families.image_family import ImageFamily
+        from challenges.grid_family import GridFamily
+        from challenges.image_family import ImageFamily
         boxes = ImageFamily._detect_blobs(img)
         if not boxes:
             return "bus"
@@ -411,11 +422,66 @@ class ImageSolver(BaseSolver):
         return max(counts, key=counts.get)
 
     def _solve(self, challenge: Challenge) -> Attempt:
-        from app.families.image_family import ImageFamily
-        return ImageFamily().solve(challenge)
+        """Solve with the semantic (CLIP) attacker.
+
+        The fallback to the lab's classical solver is kept for the case
+        where the generator module happens to be installed, but the
+        attacker never *requires* it.
+        """
+        from core.images import decode_data_url
+        img = decode_data_url(challenge.public["image"])
+        target = challenge.public.get("target") or self.target or "dog"
+
+        from bot.image_solver import SemanticImageSolver
+        sem = SemanticImageSolver(target=target, multi=self.multi,
+                                  threshold=self.threshold,
+                                  use_clip=self.use_clip)
+        out = sem.solve(img)
+        if out["hits"] or out["candidates"] == 0:
+            hits = [h.as_dict() for h in out["hits"]]
+            return Attempt(
+                answer={"hits": hits, "n": len(hits)},
+                meta={"strategy": out["strategy"],
+                      "candidates": out["candidates"],
+                      "target": target,
+                      "multi": self.multi,
+                      "confidence": max([h.score for h in out["hits"]],
+                                        default=0.0),
+                      "hits": hits},
+            )
+
+        # Fallback: the lab's own classical solver, when available.
+        try:
+            from challenges.image_family import ImageFamily
+            attempt = ImageFamily().solve(challenge)
+            attempt.meta = dict(attempt.meta or {})
+            attempt.meta["fallback_reason"] = "semantic solver found nothing"
+            return attempt
+        except Exception as exc:
+            return Attempt(answer={"hits": [], "n": 0}, confidence=0.0,
+                           meta={"error": str(exc), "target": target})
 
     def _attempt_to_result(self, attempt: Attempt) -> SolverResult:
         meta = attempt.meta or {}
+        hits = meta.get("hits")
+        if hits is not None:
+            # Semantic path: a list of selected objects.
+            answer = {
+                "hits": hits,
+                "n": len(hits),
+                "clicks": [[h["centre"][0], h["centre"][1]] for h in hits],
+                "x": hits[0]["centre"][0] if hits else None,
+                "y": hits[0]["centre"][1] if hits else None,
+            }
+            return SolverResult(
+                family=self.name,
+                answer=answer,
+                confidence=float(meta.get("confidence", 0.0)),
+                duration_ms=attempt.duration_ms,
+                ok=bool(hits),
+                meta=meta,
+            )
+
         box = attempt.answer
         # The answer is a bounding box; an attacker clicks its centre.
         answer = None
@@ -438,7 +504,7 @@ class ImageSolver(BaseSolver):
 # --------------------------------------------------------------------------
 
 def _data_url(img: Image.Image) -> str:
-    from app.families.base import to_data_url
+    from core.images import to_data_url
     return to_data_url(img)
 
 
@@ -452,7 +518,10 @@ def get_solver(family: str, **kwargs) -> BaseSolver:
     if family == "grid":
         return GridSolver(**kwargs)
     if family in ("image", "click"):
-        return ImageSolver(target=kwargs.get("target"))
+        return ImageSolver(target=kwargs.get("target"),
+                           multi=bool(kwargs.get("multi")),
+                           threshold=float(kwargs.get("threshold", 0.22)),
+                           use_clip=bool(kwargs.get("use_clip")))
     raise ValueError(f"unknown family: {family!r} "
                      f"(known: slider, text, grid, image)")
 
