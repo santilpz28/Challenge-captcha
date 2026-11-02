@@ -136,21 +136,24 @@ family, local CPU, no GPU):
 | Family | Challenge | Exact | Per unit | Cost | Attempts to pass |
 |---|---|---|---|---|---|
 | **slider** | drag the piece to the gap | **100%** | — | ~120 ms | **1.0** |
-| **text** | "type the characters" (4–6) | **87%** | 91% per character | ~2.1 s | **1.2** |
-| **grid** | "select all the images with X" (3×3) | **87%** | 96% per cell | **5 ms** | **1.2** |
-| **image** | "click the image with X" | 33% | 33% | 8 ms | 3.0 |
+| **text** | "type the characters" (4–6) | **77%** | 89% per character | ~2.2 s | **1.3** |
+| **grid** | "select all the images with X" (3×3) | **100%** | 100% per cell | ~200 ms | **1.0** |
+| **image** | "click the image with X" (4 objects) | **97%** | 97% | ~140 ms | **1.0** |
 
 An honest reading of the table:
 
 - **slider**: 40/40 exact, **0 px error**. Finding the gap was never the
   problem; the position was trivial from the start.
-- **text**: breaks in ~1.2 attempts. The cost is OCR inference (~2 s), not
-  engineering. A retry loop passes it in under 3 seconds.
-- **grid**: same result at 5 ms. Here the cost is the **arithmetic**, not the
-  model — which is why the two numbers look alike: the attacker is cheap,
-  multi-select is not.
-- **image**: 33%. The bottleneck is **not** computer vision, it is
-  *segmentation*. A useful result: it points at where the hard work is.
+- **text**: breaks in ~1.3 attempts. The cost is OCR inference (~2 s), not
+  engineering. A retry loop passes it in under 3 seconds. **It is the only
+  weak number on the board** and the least worked on.
+- **grid**: 100% in a single attempt. Here the cost is the **arithmetic**, not
+  the model.
+- **image**: 97%. It used to be 33%, and the diagnosis was "the bottleneck is
+  segmentation, not computer vision". That was true — see below.
+
+> These numbers come from the **real attacker** (`bot.solvers`), not the
+> generator's own solver. A benchmark that measures itself measures nothing.
 
 ### The multi-select arithmetic
 
@@ -159,14 +162,75 @@ The result that carries the bench: the attacker keeps its per-cell accuracy
 
 | Target cells | Exact | Per cell | Attempts |
 |---|---|---|---|
-| 1 | 87% | 96% | 1.2 |
-| 2 | 55% | 93% | 1.8 |
-| 3 | 28% | 91% | 2.7 |
-| 4 | 9% | 88% | 3.9 |
+| 1 | 100% | 100% | 1.0 |
+| 2 | 100% | 100% | 1.0 |
+| 3 | 100% | 100% | 1.0 |
+| 4 | 100% | 100% | 1.0 |
 
-This is the number a CAPTCHA provider needs: the difference between **"per
-cell"** and **"per challenge"**. An attacker with 90% per cell looks mediocre;
-at 9% complete challenges, it is decorative.
+This is the table a CAPTCHA provider needs: the difference between **"per
+cell"** and **"per challenge"**. With the current attacker the combinatorial
+arithmetic stops being a defence — not because it is hard, but because the
+compressed palette the lab uses to harden the challenge has a blind spot: two
+classes that differ only in the exact tone of their colour.
+
+And the number that makes the audit sellable: **an attacker at 100% per cell
+is not decorative either**. The combinatorial arithmetic was supposed to be
+what held the grid up, and an attacker that knows the palette sweeps it.
+
+### Segmentation: where the bottleneck was
+
+The image family scored **33%** and the initial diagnosis was "the problem is
+not computer vision, it is segmentation". That was true. Measured four
+strategies over the same 30 scenes:
+
+| Strategy | Recall | Precision | Boxes/scene |
+|---|---|---|---|
+| Saturation threshold | 14% | 26% | 2.6 |
+| Colour clustering (k-means) | 2.5% | 2% | 5.0 |
+| Distance transform + watershed | 0% | 0% | 1.0 |
+| **Masked template matching** | **76%** | **64%** | 4.7 |
+
+Why the obvious three fail:
+
+1. **Colour clustering**: the palette is deliberately compressed across
+   classes, so colour cannot separate them. A colour clusterer has nothing
+   to grip.
+2. **Connected components**: two touching objects are one region.
+3. **Classic watershed**: the canonical answer, and it fails for a specific
+   reason. Objects are drawn on RGBA layers and pasted onto the background,
+   so where two overlap the union is solid. Its distance transform has
+   **one** peak in the overlap, not one per object — and a watershed cannot
+   separate what the distance already fused.
+
+What works is **masked template matching**: every object is a *known* shape at
+a *known* size, and the template is masked so an object covered by another
+still correlates on its visible part.
+
+### The attack that does less work
+
+The most useful finding in this repo. An attacker that **knows what it is
+looking for does not need to classify anything**:
+
+| Strategy | Accuracy |
+|---|---|
+| Segment everything and classify each object | 53% |
+| **Search directly for the target's template** | **93%** |
+
+The difference is not a better classifier: it is **asking less**. The
+"segment and classify everything" pipeline pays for every wrong label on
+every distractor. The direct attack asks a narrower question — "where is the
+bus?" — and answers it by correlating against the bus template alone.
+
+And the fine detail that makes it work at all: correlation **cannot tell a
+bus from a car** (0.98410 against 0.98414 on the same cell; they are nearly
+identical rectangles). What separates them is the exact tone of the colour:
+bus is (188, 92, 58), car is (196, 104, 66). With colour as the tie-break,
+the grid family goes from 70% to **100%**.
+
+> **The transferable lesson:** the strongest attack is not the one that
+> classifies best, it is the one that **asks the least**. And when two things
+> are indistinguishable by shape, look at the colour before inventing more
+> geometry.
 
 ### The geometry that gives itself away
 

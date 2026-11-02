@@ -73,7 +73,8 @@ def cmd_image(args) -> int:
     elif args.family == "image":
         kwargs = {"target": args.target, "multi": args.multi,
                   "threshold": args.threshold,
-                  "use_clip": bool(getattr(args, "clip", False))}
+                  "use_clip": bool(getattr(args, "clip", False)),
+                  "segmentation": getattr(args, "segmentation", "auto")}
     solver = get_solver(args.family, **kwargs)
 
     if args.family == "slider":
@@ -110,7 +111,8 @@ def cmd_api(args) -> int:
                         gap=args.gap, target=args.target,
                         multi=bool(getattr(args, "multi", False)),
                         threshold=float(getattr(args, "threshold", 0.22)),
-                        use_clip=bool(getattr(args, "clip", False)))
+                        use_clip=bool(getattr(args, "clip", False)),
+                        segmentation=getattr(args, "segmentation", "auto"))
     if args.family == "slider":
         if not challenge.piece:
             _out({"error": "slider challenge carried no piece sprite"},
@@ -241,6 +243,9 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("--grid", type=int, default=3)
     im.add_argument("--tile-size", type=int, default=96)
     im.add_argument("--gap", type=int, default=8)
+    im.add_argument("--segmentation", default="auto",
+                    choices=["auto", "color", "components", "watershed"],
+                    help="segmentation strategy for the image family")
     im.add_argument("--strategy", default="auto",
                     choices=["auto", "geometry", "template", "contrast"],
                     help="slider strategy: geometry reads the position from "
@@ -273,6 +278,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--grid", type=int, default=3)
     ap.add_argument("--tile-size", type=int, default=96)
     ap.add_argument("--gap", type=int, default=8)
+    ap.add_argument("--segmentation", default="auto",
+                    choices=["auto", "color", "components", "watershed"],
+                    help="segmentation strategy for the image family")
     ap.add_argument("--strategy", default="auto",
                     choices=["auto", "geometry", "template", "contrast"])
     ap.add_argument("--timeout", type=float, default=15.0)

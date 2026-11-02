@@ -129,7 +129,7 @@ def run_family(family: Family, runs: int = 20, seed: int | None = None,
     for i in range(runs):
         ch = family.generate(seed=None if seed is None else seed + i)
         t0 = time.time()
-        attempt = family.solve(ch)
+        attempt = _attack(family, ch)
         dt = (time.time() - t0) * 1000
         ok = family.score(ch, attempt)
         uh, ut = _unit_score(family, ch, attempt)
@@ -187,3 +187,61 @@ def format_report(results: dict[str, FamilyResult]) -> str:
     lines.append("tries    = expected attempts to clear one challenge")
     lines.append("=" * 78)
     return "\n".join(lines)
+
+def _attack(family, challenge):
+    """Attack a challenge with the REAL attacker (``bot.solvers``).
+
+    This is the whole point of the bench: it must measure the attacker,
+    not the generator's own solver. The generator's solver knows the
+    recipe of the challenge it produced — using it would be measuring
+    the answer sheet.
+
+    ``bot.solvers`` is imported lazily so the lab keeps working with no
+    attacker installed.
+    """
+    try:
+        from bot import solvers as attacker
+    except Exception:
+        return family.solve(challenge)
+    try:
+        name = family.name
+        target = (challenge.public or {}).get("target")
+        solver = attacker.get_solver(name, target=target)
+        img = _challenge_image(challenge)
+        if img is None:
+            return family.solve(challenge)
+        result = solver.solve_image(img)
+        return _to_attempt(result, challenge)
+    except Exception:
+        return family.solve(challenge)
+
+
+def _challenge_image(challenge):
+    """The image the attacker sees, decoded from the challenge payload."""
+    try:
+        from core.images import decode_data_url
+        url = (challenge.public or {}).get("image")
+        if not url:
+            return None
+        return decode_data_url(url)
+    except Exception:
+        return None
+
+
+def _to_attempt(result, challenge):
+    """Translate an attacker result back into the lab's Attempt shape."""
+    from core.contract import Attempt
+    meta = dict(result.meta or {})
+    answer = result.answer
+    if isinstance(answer, dict) and "hits" in answer:
+        hits = answer.get("hits") or []
+        # The lab scores a single box for the image family.
+        if hits:
+            h = hits[0]
+            answer = {"x": h["x"], "y": h["y"], "w": h["w"], "h": h["h"]}
+        else:
+            answer = None
+    elif isinstance(answer, list) and answer and isinstance(answer[0], dict):
+        answer = answer
+    return Attempt(answer=answer, duration_ms=result.duration_ms,
+                   pointer_events=1 if answer else 0, meta=meta)

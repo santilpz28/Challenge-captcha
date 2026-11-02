@@ -388,15 +388,21 @@ class ImageSolver(BaseSolver):
     name = "image"
 
     def __init__(self, target: str | None = None, multi: bool = False,
-                 threshold: float = 0.22, use_clip: bool = False):
+                 threshold: float = 0.22, use_clip: bool = False,
+                 segmentation: str = "auto"):
         self.target = target
         self.multi = multi
         self.threshold = threshold
         self.use_clip = use_clip
+        self.segmentation = segmentation
 
     def _build_challenge(self, img: Image.Image, **public) -> Challenge:
-        from challenges.image_family import ImageFamily
-        target = public.get("target") or self._infer_target(img)
+        # An explicit target always wins. Only infer one when the caller
+        # did not say what to look for — inferring over a scene full of
+        # distractor classes is how the attacker ends up clicking the
+        # bus when the challenge asked for the bird.
+        target = (public.get("target") or self.target
+                  or self._infer_target(img))
         return Challenge(
             family="image",
             cid=Challenge.new_id(),
@@ -408,16 +414,24 @@ class ImageSolver(BaseSolver):
         )
 
     def _infer_target(self, img: Image.Image) -> str:
-        from challenges.grid_family import GridFamily
-        from challenges.image_family import ImageFamily
-        boxes = ImageFamily._detect_blobs(img)
+        """Guess which class the scene holds, when the caller says nothing.
+
+        Uses the attacker's own segmenter and classifier — no generator
+        import — so this works on a field target too.
+        """
+        from bot import segment as segmenter
+        from bot import shapes
+        try:
+            boxes = segmenter.segment(img, strategy="auto")
+        except Exception:
+            boxes = []
         if not boxes:
             return "bus"
         counts: dict[str, int] = {}
         for box in boxes:
             crop = img.crop((box["x"], box["y"],
                              box["x"] + box["w"], box["y"] + box["h"]))
-            label, _ = GridFamily._classify(crop)
+            label, _ = shapes.classify(crop)
             counts[label] = counts.get(label, 0) + 1
         return max(counts, key=counts.get)
 
@@ -435,7 +449,8 @@ class ImageSolver(BaseSolver):
         from bot.image_solver import SemanticImageSolver
         sem = SemanticImageSolver(target=target, multi=self.multi,
                                   threshold=self.threshold,
-                                  use_clip=self.use_clip)
+                                  use_clip=self.use_clip,
+                                  segmentation=self.segmentation)
         out = sem.solve(img)
         if out["hits"] or out["candidates"] == 0:
             hits = [h.as_dict() for h in out["hits"]]
@@ -450,16 +465,12 @@ class ImageSolver(BaseSolver):
                       "hits": hits},
             )
 
-        # Fallback: the lab's own classical solver, when available.
-        try:
-            from challenges.image_family import ImageFamily
-            attempt = ImageFamily().solve(challenge)
-            attempt.meta = dict(attempt.meta or {})
-            attempt.meta["fallback_reason"] = "semantic solver found nothing"
-            return attempt
-        except Exception as exc:
-            return Attempt(answer={"hits": [], "n": 0}, confidence=0.0,
-                           meta={"error": str(exc), "target": target})
+        # Nothing found. The attacker does NOT fall back to the
+        # generator's solver: an attacker that calls the generator is
+        # not measuring the challenge, it is reading the answer sheet.
+        return Attempt(answer={"hits": [], "n": 0}, confidence=0.0,
+                       meta={"reason": "no candidate matched the target",
+                             "target": target})
 
     def _attempt_to_result(self, attempt: Attempt) -> SolverResult:
         meta = attempt.meta or {}

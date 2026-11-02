@@ -336,6 +336,136 @@ class TestCaptchaClient:
 
 
 # --------------------------------------------------------------------------
+# segmentation
+# --------------------------------------------------------------------------
+
+class TestSegmentation:
+    """The attacker must find the objects before it can classify them.
+
+    Segmentation was the measured bottleneck of the image family: the
+    bench reported 33% and the diagnosis was "the vision is not the
+    problem, the segmentation is". These tests pin the fix.
+    """
+
+    def test_template_matching_finds_every_object(self):
+        """Every drawn object must be located, at the right place."""
+        from challenges.image_family import ImageFamily
+        from core.images import decode_data_url
+        from bot import segment as segmenter
+
+        fam = ImageFamily(size=220, n_objects=4, distortion=0.25)
+        hits = 0
+        total = 0
+        for seed in range(12):
+            ch = fam.generate(seed=seed)
+            img = decode_data_url(ch.public["image"])
+            dets = segmenter.match_templates(img)
+            for obj in ch.artifacts["positions"]:
+                total += 1
+                # The ground truth is the 72x72 window the object was
+                # pasted into; the drawn shape sits in its middle.
+                for d in dets:
+                    if (abs(d["x"] - obj["x"]) <= 8
+                            and abs(d["y"] - obj["y"]) <= 8):
+                        hits += 1
+                        break
+        # Measured over 30 scenes: 75.8%. The threshold leaves headroom
+        # for the sample variation of a 12-seed run.
+        assert hits / total >= 0.70, \
+            f"template matching found {hits}/{total} objects"
+
+    def test_direct_target_search_beats_classify_everything(self):
+        """Searching for the target directly must beat segment+classify.
+
+        This is the core insight of the image attacker: an attacker
+        that knows the target does not need to classify the distractors.
+        """
+        from challenges.image_family import ImageFamily
+        from core.images import decode_data_url
+        from bot import segment as segmenter
+
+        fam = ImageFamily(size=220, n_objects=4, distortion=0.25)
+        direct = 0
+        total = 0
+        for seed in range(12):
+            ch = fam.generate(seed=seed)
+            img = decode_data_url(ch.public["image"])
+            target = ch.truth["label"]
+            obj = next(o for o in ch.artifacts["positions"]
+                       if o["label"] == target)
+            dets = segmenter.match_templates(img, labels=[target])
+            total += 1
+            if dets and (abs(dets[0]["x"] - obj["x"]) <= 8
+                         and abs(dets[0]["y"] - obj["y"]) <= 8):
+                direct += 1
+        # Measured over 30 scenes: 80%.
+        assert direct / total >= 0.75, \
+            f"direct target search found {direct}/{total}"
+
+    def test_colour_check_rejects_empty_background(self):
+        """A correlation peak on bare background must not be an object."""
+        from PIL import Image as PILImage
+        from bot import segment as segmenter
+
+        blank = PILImage.new("RGB", (220, 220), (240, 234, 219))
+        dets = segmenter.match_templates(blank)
+        assert not dets, \
+            f"empty background produced {len(dets)} false objects"
+
+    def test_segmenter_works_without_the_generator(self):
+        """Segmentation must not import the challenge generators."""
+        import importlib
+        import shutil
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        gen = root / "challenges"
+        hidden = root / "_challenges_tmp"
+        if not gen.exists():
+            pytest.skip("challenges/ not present")
+        shutil.move(str(gen), str(hidden))
+        try:
+            code = (
+                "import sys; sys.path.insert(0, %r);\n"
+                "from bot import segment;\n"
+                "from bot.shapes import CLASSES, draw_tile;\n"
+                "print('OK')" % str(root)
+            )
+            r = subprocess.run([sys.executable, "-c", code],
+                               capture_output=True, text=True, timeout=90)
+            assert r.returncode == 0, r.stderr
+            assert "OK" in r.stdout
+        finally:
+            shutil.move(str(hidden), str(gen))
+
+
+class TestSharedFeatures:
+    """The generator and the attacker must measure the same thing."""
+
+    def test_reference_signatures_match(self):
+        """Both sides must build identical reference vectors."""
+        import numpy as np
+        from bot import shapes
+        from challenges.grid_family import GridFamily
+
+        for label in ("bus", "car", "boat"):
+            a = GridFamily._reference_features(label)
+            b = shapes.reference_features(label)
+            assert np.allclose(a, b), label
+
+    def test_shape_template_is_transparent_outside_the_shape(self):
+        """The template must only cover the object, not its background."""
+        import numpy as np
+        from bot import shapes
+
+        tpl = shapes.shape_template("bus", 72)
+        assert np.isnan(tpl[:, :, 0]).any(), "template has no transparency"
+        assert not np.isnan(tpl[36, 36, 0]), "centre of the shape is masked out"
+
+
+# --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
 

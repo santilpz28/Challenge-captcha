@@ -8,8 +8,12 @@ This module wraps OpenCLIP ViT-B/32 (ONNX, fp16) so the attacker can answer
 "does this image contain a bus?" the way a modern bot would: embed the image,
 embed the text prompts, compare.
 
+It lives in ``bot/`` because it is part of the **attacker**, not part of the
+challenge generator: the lab may use it to label ground truth, but the bot
+uses it to answer the challenge.
+
 The model is **not vendored** — it is downloaded on first use into
-`~/.cache/captcha-lab/models` (~300 MB). The repo stays small, and the
+``~/.cache/captcha-lab/models`` (~300 MB). The repo stays small, and the
 bench degrades gracefully: without the model, the image/grid families fall
 back to their classical classifiers.
 

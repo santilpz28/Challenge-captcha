@@ -138,21 +138,25 @@ familia, CPU local, sin GPU):
 | Familia | Reto | Exacto | Por unidad | Coste | Intentos para pasar |
 |---|---|---|---|---|---|
 | **slider** | arrastrar la pieza al hueco | **100%** | — | ~120 ms | **1,0** |
-| **text** | "escribe los caracteres" (4–6) | **87%** | 91% por carácter | ~2,1 s | **1,2** |
-| **grid** | "selecciona todas las imágenes con X" (3×3) | **87%** | 96% por celda | **5 ms** | **1,2** |
-| **image** | "haz clic en la imagen con X" | 33% | 33% | 8 ms | 3,0 |
+| **text** | "escribe los caracteres" (4–6) | **77%** | 89% por carácter | ~2,2 s | **1,3** |
+| **grid** | "selecciona todas las imágenes con X" (3×3) | **100%** | 100% por celda | ~200 ms | **1,0** |
+| **image** | "haz clic en la imagen con X" (4 objetos) | **97%** | 97% | ~140 ms | **1,0** |
 
 Lectura honesta de la tabla:
 
 - **slider**: 40/40 exactos, **0 px de error**. Encontrar el hueco nunca fue el
   problema; la posición era trivial desde el principio.
-- **text**: se rompe en ~1,2 intentos. El coste es de inferencia OCR (~2 s), no de
-  ingeniería. Un bucle de reintentos lo pasa en menos de 3 segundos.
-- **grid**: mismo resultado con 5 ms. Aquí el coste es la **aritmética**, no el
-  modelo — y por eso los dos números se parecen: el atacante es barato, la
-  selección múltiple no.
-- **image**: 33%. El cuello de botella **no es la visión artificial**, es la
-  *segmentación*. Es un resultado útil: señala dónde está el trabajo difícil.
+- **text**: se rompe en ~1,3 intentos. El coste es de inferencia OCR (~2 s), no de
+  ingeniería. Un bucle de reintentos lo pasa en menos de 3 segundos. **Es el
+  único número flojo del banco** y el que menos se ha trabajado.
+- **grid**: 100% con un solo intento. Aquí el coste es la **aritmética**, no el
+  modelo.
+- **image**: 97%. Antes daba 33% y el diagnóstico era "el cuello no es la
+  visión, es la segmentación". Era cierto — y arreglarlo está documentado más
+  abajo.
+
+> Estas cifras las produce el **atacante real** (`bot.solvers`), no el solver
+> del propio generador. Un banco que se mide a sí mismo no mide nada.
 
 ### La aritmética de la selección múltiple
 
@@ -161,14 +165,74 @@ El resultado que sostiene el banco: el atacante mantiene su precisión por celda
 
 | Celdas objetivo | Exacto | Por celda | Intentos |
 |---|---|---|---|
-| 1 | 87% | 96% | 1,2 |
-| 2 | 55% | 93% | 1,8 |
-| 3 | 28% | 91% | 2,7 |
-| 4 | 9% | 88% | 3,9 |
+| 1 | 100% | 100% | 1,0 |
+| 2 | 100% | 100% | 1,0 |
+| 3 | 100% | 100% | 1,0 |
+| 4 | 100% | 100% | 1,0 |
 
-Éste es el número que un proveedor de CAPTCHA necesita: **la diferencia entre
-"por celda" y "por reto"**. Un atacante con 90% por celda parece mediocre;
-con 9% de retos completos, es decorativo.
+Ésta es la tabla que un proveedor de CAPTCHA necesita: **la diferencia entre
+"por celda" y "por reto"**. Con el atacante actual, la aritmética combinatoria
+deja de ser una defensa — no porque sea difícil, sino porque la paleta
+comprimida que el lab usa para endurecer el reto tiene un punto ciego: dos
+clases que sólo se distinguen por el tono exacto de su color.
+
+Y el número que hace la auditoría vendible: **un atacante con 100% por celda
+tampoco es decorativo**. La aritmética combinatoria era la defensa que se
+suponía que sostenía el grid, y un atacante que conoce la paleta la barre.
+
+### La segmentación: donde estaba el cuello de botella
+
+La familia image daba **33%** y el diagnóstico inicial era "el problema no es
+la visión artificial, es la segmentación". Era cierto. Medidas cuatro
+estrategias sobre las mismas 30 escenas:
+
+| Estrategia | Recall | Precisión | Cajas/escena |
+|---|---|---|---|
+| Umbral de saturación | 14% | 26% | 2,6 |
+| Clustering de color (k-means) | 2,5% | 2% | 5,0 |
+| Distance transform + watershed | 0% | 0% | 1,0 |
+| **Template matching enmascarado** | **76%** | **64%** | 4,7 |
+
+Por qué fallan las tres primeras, que son las respuestas obvias:
+
+1. **Clustering de color**: la paleta está comprimida a propósito entre clases
+   (para que el color no regule). Un agrupador por color no tiene nada que
+   agarrar.
+2. **Componentes conexas**: dos objetos que se tocan son una región.
+3. **Watershed clásico**: es la respuesta canónica, y falla por una razón
+   concreta. Los objetos se dibujan sobre capas RGBA y se pegan sobre el
+   fondo, así que donde dos se solapan la unión es sólida. Su transformada de
+   distancia tiene **un** pico en el solape, no uno por objeto — y un watershed
+   no puede separar lo que la distancia ya fundió.
+
+Lo que funciona es **template matching enmascarado**: cada objeto es una forma
+*conocida* de tamaño *conocido*, y la plantilla se enmascara para que un objeto
+tapado por otro siga correlacionando sobre su parte visible.
+
+### El ataque que hace menos trabajo
+
+El hallazgo más útil del repo. Un atacante que **sabe qué busca no necesita
+clasificar nada**:
+
+| Estrategia | Acierto |
+|---|---|
+| Segmentar todo y clasificar cada objeto | 53% |
+| **Buscar directamente la plantilla del target** | **93%** |
+
+La diferencia no es un clasificador mejor: es **preguntar menos**. El pipeline
+"segmento y clasifico todo" paga el coste de cada etiqueta errónea en cada
+distractor. El ataque directo pregunta algo más estrecho —"¿dónde está un
+bus?"— y lo responde correlacionando sólo contra la plantilla del bus.
+
+Y el detalle fino que lo hace funcionar del todo: la correlación **no
+distingue un bus de un coche** (0,98410 contra 0,98414 en la misma celda; son
+rectángulos casi idénticos). Lo que los distingue es el tono exacto del color:
+bus es (188, 92, 58), coche es (196, 104, 66). Con desempate por color, la
+familia grid pasa del 70% al **100%**.
+
+> **La lección transferible:** el ataque más fuerte no es el que clasifica
+> mejor, es el que **pregunta menos**. Y cuando dos cosas son indistinguibles
+> por forma, mira el color antes de inventar más geometría.
 
 ### La geometría que delata la respuesta
 

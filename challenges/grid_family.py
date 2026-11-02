@@ -62,55 +62,14 @@ TARGETS = list(CLASSES.keys())
 def draw_tile(label: str, size: int = 96, seed: int = 0) -> Image.Image:
     """Draw one synthetic tile containing the given class.
 
-    The background varies per tile (hue, brightness, gradient) so the
-    classifier cannot cheat by key on the background.
+    Delegates to the attacker's implementation so the reference
+    signatures the generator builds are the same ones the attacker
+    builds. If the two drawings drifted apart, the bench would be
+    measuring the difference between two renderers instead of the
+    difficulty of the challenge.
     """
-    rng = np.random.default_rng(seed)
-    spec = CLASSES[label]
-    base = np.array(spec["color"], dtype=np.float32)
-
-    # Background: a textured field with a per-tile gradient, so the tile is
-    # not a flat colour and the classifier has to look at the shape.
-    bg = np.zeros((size, size, 3), dtype=np.float32)
-    bg[:, :] = 232 - rng.normal(0, 20, (size, size, 1))
-    grad = np.linspace(-18, 18, size)[None, :, None]
-    bg += grad + rng.normal(0, 14, (size, size, 3))
-    img = Image.fromarray(np.clip(bg, 0, 255).astype(np.uint8), "RGB")
-    d = ImageDraw.Draw(img)
-
-    c = tuple(int(v) for v in base)
-    m = size // 2
-    shape = spec["shape"]
-    if shape == "rect":
-        d.rectangle([m - 26, m - 18, m + 26, m + 18], fill=c)
-        d.rectangle([m - 26, m - 18, m + 26, m - 8], fill=tuple(
-            max(0, v - 40) for v in c))
-    elif shape == "rounded":
-        d.rounded_rectangle([m - 26, m - 16, m + 26, m + 18], radius=9, fill=c)
-        d.ellipse([m - 22, m - 8, m + 2, m + 14], fill=tuple(
-            max(0, v - 45) for v in c))
-    elif shape == "hull":
-        d.polygon([(m - 30, m + 14), (m + 30, m + 14), (m + 18, m - 6),
-                   (m - 18, m - 6)], fill=c)
-        d.rectangle([m - 4, m - 24, m + 6, m - 6], fill=c)
-    elif shape == "wheels":
-        d.line([(m - 24, m + 16), (m, m - 8), (m + 24, m + 16)],
-               fill=c, width=5)
-        d.ellipse([m - 32, m + 8, m - 14, m + 26], outline=c, width=5)
-        d.ellipse([m + 14, m + 8, m + 32, m + 26], outline=c, width=5)
-    elif shape == "triangle":
-        d.polygon([(m, m - 26), (m + 26, m + 20), (m - 26, m + 20)], fill=c)
-        d.rectangle([m - 4, m + 18, m + 4, m + 28], fill=tuple(
-            max(0, v - 40) for v in c))
-    elif shape == "wings":
-        d.ellipse([m - 28, m - 14, m + 2, m + 12], fill=c)
-        d.ellipse([m - 2, m - 14, m + 28, m + 12], fill=c)
-        d.ellipse([m - 6, m - 6, m + 6, m + 6], fill=tuple(
-            max(0, v - 50) for v in c))
-
-    # Photographic-ish grain.
-    arr = np.asarray(img, dtype=np.float32) + rng.normal(0, 7, (size, size, 3))
-    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+    from bot import shapes
+    return shapes.draw_tile(label, size, seed)
 
 
 class GridFamily:
@@ -232,6 +191,18 @@ class GridFamily:
 
     @staticmethod
     def _classify(tile: Image.Image) -> tuple[str, float]:
+        """Delegate to the attacker's shared implementation.
+
+        One implementation, two consumers: the generator labels ground
+        truth with the same code the attacker uses to guess. If they
+        diverged, the bench would be measuring the difference between
+        two classifiers rather than the difficulty of the challenge.
+        """
+        from bot import shapes
+        return shapes.classify(tile, references=GridFamily._reference_features_map())
+
+    @staticmethod
+    def _classify_legacy(tile: Image.Image) -> tuple[str, float]:
         """Classify a tile by the SHAPE of the object in it.
 
         The palette is deliberately compressed across classes (see CLASSES),
@@ -305,30 +276,25 @@ class GridFamily:
     _REF_CACHE: dict = {}
 
     @classmethod
+    def _reference_features_map(cls) -> dict:
+        """Reference shape signatures for every known class.
+
+        Built by the attacker's shared implementation so both sides
+        measure the same features.
+        """
+        from bot import shapes
+        if not cls._REF_CACHE:
+            cls._REF_CACHE.update(shapes.reference_signatures())
+        return cls._REF_CACHE
+
+    @classmethod
     def _reference_features(cls, label: str) -> np.ndarray:
         """Shape signature of a class, computed from its canonical drawing."""
-        if label in cls._REF_CACHE:
-            return cls._REF_CACHE[label]
-        import cv2
-        tile = draw_tile(label, 96, seed=0)
-        hsv = cv2.cvtColor(np.asarray(tile.convert("RGB")), cv2.COLOR_RGB2HSV)
-        sat = hsv[:, :, 1].astype(np.float32)
-        mask = (sat > 90).astype(np.uint8) * 255
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
-                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
-        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
-        cnt = max(cnts, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(cnt)
-        area = cv2.contourArea(cnt)
-        moments = cv2.moments(cnt)
-        hu = cv2.HuMoments(moments).flatten()
-        hu_n = -np.sign(hu) * np.log10(np.abs(hu) + 1e-30)
-        feats = np.array([area / (w * h + 1e-6), w / (h + 1e-6),
-                          float(len(cnts)), *hu_n], dtype=np.float32)
-        cls._REF_CACHE[label] = feats
+        from bot import shapes
+        feats = shapes.reference_features(label)
+        if feats is None:
+            raise KeyError(label)
         return feats
-
 
     # ------------------------------------------------------------------
     # scoring
