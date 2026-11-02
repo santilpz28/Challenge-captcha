@@ -9,6 +9,7 @@ Run:  pytest tests/test_bot_unit.py -v
 """
 from __future__ import annotations
 
+import inspect
 import math
 import sys
 from pathlib import Path
@@ -267,6 +268,98 @@ class TestTextSolver:
         # A deliberate run of three is kept — "111" is a real answer.
         assert _drop_ocr_duplicates("111") == "111"
         assert _drop_ocr_duplicates("") == ""
+
+
+class TestEmptyMatch:
+    """A target that matches nothing is a valid answer, not a crash.
+
+    Both bugs here were found the hard way: the CLI died with
+    ``TypeError: Attempt.__init__() got an unexpected keyword argument
+    'confidence'`` whenever the scene held no matching object. An
+    attacker that crashes on "nothing found" is an attacker that only
+    works on easy challenges.
+    """
+
+    def _scene_with_objects(self):
+        import io
+        from PIL import Image, ImageDraw
+        img = Image.new("RGB", (300, 200), (240, 235, 225))
+        d = ImageDraw.Draw(img)
+        d.ellipse([50, 60, 110, 120], fill=(200, 60, 50))
+        d.ellipse([180, 60, 240, 120], fill=(60, 120, 200))
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return buf.getvalue()
+
+    def test_no_match_does_not_raise(self):
+        """The bug: Attempt() was called with a confidence kwarg it lacks."""
+        raw = self._scene_with_objects()
+        res = get_solver("image", target="unicorn", multi=True,
+                         segmentation="template").solve_image(raw)
+        assert res.ok is False
+
+    def test_no_match_returns_the_semantic_shape(self):
+        """The bug: an empty hit list fell through to the bounding-box
+        branch and raised KeyError('x')."""
+        raw = self._scene_with_objects()
+        res = get_solver("image", target="unicorn", multi=True,
+                         segmentation="template").solve_image(raw)
+        assert isinstance(res.answer, dict)
+        assert res.answer["hits"] == []
+        assert res.answer["clicks"] == []
+        assert res.answer["n"] == 0
+
+    def test_no_match_explains_itself(self):
+        """A failed solve must say WHY, not just fail."""
+        raw = self._scene_with_objects()
+        res = get_solver("image", target="unicorn", multi=True,
+                         segmentation="template").solve_image(raw)
+        assert res.meta.get("reason")
+        assert res.meta.get("target") == "unicorn"
+
+    def test_attempt_contract_has_no_confidence_field(self):
+        """`confidence` belongs to SolverResult, not to the shared
+        Attempt contract. This asserts the contract stays as declared."""
+        import dataclasses
+        from core.contract import Attempt
+        names = {f.name for f in dataclasses.fields(Attempt)}
+        assert "confidence" not in names
+        assert "meta" in names
+
+
+class TestCliSurface:
+    """The command line must not accept flags the engine dropped.
+
+    A stale ``choices=`` entry is a silent failure: argparse accepts the
+    flag, the engine ignores it and quietly falls back to a much weaker
+    strategy. The user sees a plausible number and no warning.
+    """
+
+    def test_watershed_is_not_offered(self):
+        """Watershed was replaced by template matching (0% recall)."""
+        from bot.cli import SEGMENTATION_CHOICES
+        assert "watershed" not in SEGMENTATION_CHOICES
+        assert "template" in SEGMENTATION_CHOICES
+        assert SEGMENTATION_CHOICES == ["auto", "template", "color", "components"]
+
+    def test_segmentation_choices_match_the_engine(self):
+        """Every advertised strategy must exist in bot/segment.py."""
+        import bot.segment as seg
+        from bot.cli import SEGMENTATION_CHOICES
+        for name in SEGMENTATION_CHOICES:
+            assert name in ("auto", "template", "color", "components")
+        # And the engine must handle each one explicitly.
+        src = inspect.getsource(seg.segment)
+        for name in ("template", "color", "components"):
+            assert f'"{name}"' in src, f"{name} not handled by segment()"
+
+    def test_unknown_strategy_is_rejected_not_ignored(self):
+        """argparse must refuse a strategy the engine does not know."""
+        from bot.cli import build_parser
+        p = build_parser()
+        with pytest.raises(SystemExit):
+            p.parse_args(["image", "--family", "image", "--input", "i",
+                          "--segmentation", "watershed"])
 
 
 class TestAutonomy:

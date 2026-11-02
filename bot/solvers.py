@@ -468,15 +468,18 @@ class ImageSolver(BaseSolver):
         # Nothing found. The attacker does NOT fall back to the
         # generator's solver: an attacker that calls the generator is
         # not measuring the challenge, it is reading the answer sheet.
-        return Attempt(answer={"hits": [], "n": 0}, confidence=0.0,
+        return Attempt(answer={"hits": [], "n": 0},
                        meta={"reason": "no candidate matched the target",
-                             "target": target})
+                             "target": target, "confidence": 0.0,
+                             "hits": []})
 
     def _attempt_to_result(self, attempt: Attempt) -> SolverResult:
         meta = attempt.meta or {}
         hits = meta.get("hits")
         if hits is not None:
-            # Semantic path: a list of selected objects.
+            # Semantic path: a list of selected objects. An empty list is
+            # a legitimate answer ("nothing matched"), so it must not fall
+            # through to the bounding-box branch below.
             answer = {
                 "hits": hits,
                 "n": len(hits),
@@ -496,7 +499,7 @@ class ImageSolver(BaseSolver):
         box = attempt.answer
         # The answer is a bounding box; an attacker clicks its centre.
         answer = None
-        if box:
+        if isinstance(box, dict) and "x" in box and "w" in box:
             answer = {"x": box["x"] + box["w"] // 2,
                       "y": box["y"] + box["h"] // 2,
                       "box": box}

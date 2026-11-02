@@ -36,6 +36,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bot import __version__
 
+# Segmentation strategies exposed on the command line. They mirror the
+# strategies in bot/segment.py: "template" is the one that separates
+# touching objects, "auto" prefers it when the shape palette fits.
+# Keep this list in sync with segment(), or a stale choice silently
+# falls back to colour clustering.
+SEGMENTATION_CHOICES = ["auto", "template", "color", "components"]
+
 
 # --------------------------------------------------------------------------
 # helpers
@@ -123,15 +130,6 @@ def cmd_api(args) -> int:
                                 sprite=challenge.raw.get("sprite"))
     else:
         res = solver.solve_image(challenge.image, target=args.target)
-        if args.family == "image" and getattr(args, "multi", False):
-            # Multi-select: click EVERY matching object, each with its
-            # own human-like movement.
-            from bot.behavior import human_click_trace
-            clicks = res.answer.get("clicks", []) if isinstance(res.answer, dict) else []
-            trace = []
-            for cx, cy in clicks:
-                trace.extend(human_click_trace(12, 120, float(cx), float(cy)))
-            args._clicks = clicks
 
     report = {"solved_answer": res.to_dict(),
               "challenge_id": challenge.challenge_id,
@@ -244,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("--tile-size", type=int, default=96)
     im.add_argument("--gap", type=int, default=8)
     im.add_argument("--segmentation", default="auto",
-                    choices=["auto", "color", "components", "watershed"],
+                    choices=SEGMENTATION_CHOICES,
                     help="segmentation strategy for the image family")
     im.add_argument("--strategy", default="auto",
                     choices=["auto", "geometry", "template", "contrast"],
@@ -279,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--tile-size", type=int, default=96)
     ap.add_argument("--gap", type=int, default=8)
     ap.add_argument("--segmentation", default="auto",
-                    choices=["auto", "color", "components", "watershed"],
+                    choices=SEGMENTATION_CHOICES,
                     help="segmentation strategy for the image family")
     ap.add_argument("--strategy", default="auto",
                     choices=["auto", "geometry", "template", "contrast"])
