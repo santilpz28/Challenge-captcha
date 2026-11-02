@@ -1,0 +1,23 @@
+# Secrets — never commit
+app/.session_secret
+*.secret
+.env
+
+# Runtime output: logs, reports, generated captures
+out/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

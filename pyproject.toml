@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "challenge-captcha-bot"
+version = "1.0.0"
+description = "Automated CAPTCHA solving bot with a reproducible test bench (authorized security auditing only)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "santilpz28" }]
+keywords = ["captcha", "security", "audit", "automation", "bot", "playwright"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pillow>=10.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+attackers = [
+    "opencv-python-headless>=4.9",
+    "rapidocr-onnxruntime>=1.3",
+    "onnxruntime>=1.17",
+]
+browser = ["playwright>=1.42"]
+clip = ["ftfy>=6.1", "regex>=2023.0", "huggingface-hub>=0.23"]
+dev = ["pytest>=8.0", "requests>=2.31"]
+
+[project.urls]
+Homepage = "https://github.com/santilpz28/Challenge-captcha"
+Source = "https://github.com/santilpz28/Challenge-captcha"
+
+[project.scripts]
+captcha-bot = "bot.cli:main"
+
+[tool.setuptools]
+packages = ["bot", "app", "app.families"]
+include-package-data = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
